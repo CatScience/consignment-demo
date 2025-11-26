@@ -1,250 +1,225 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import altair as alt
 from datetime import datetime, timedelta
 
-# -------------------------------------------------------------
+# ---------------------------------------------------
 # PAGE CONFIG
-# -------------------------------------------------------------
-st.set_page_config(page_title="Hospital Consignment Optimizer", layout="wide")
-
-# -------------------------------------------------------------
-# LOAD FUNCTIONS
-# -------------------------------------------------------------
-@st.cache_data
-def load_file(uploaded_file):
-    """Load CSV or Excel."""
-    if uploaded_file.name.endswith(".csv"):
-        return pd.read_csv(uploaded_file)
-    else:
-        return pd.read_excel(uploaded_file)
-
-@st.cache_data
-def load_demo():
-    return pd.read_csv("diagnostic_kits_consignment_demo.csv")
-
-# -------------------------------------------------------------
-# SIDEBAR
-# -------------------------------------------------------------
-st.sidebar.header("📁 Data Input")
-
-use_demo = st.sidebar.button("Use Demo Dataset")
-uploaded = st.sidebar.file_uploader("Upload your dataset (CSV or Excel)", type=["csv", "xlsx"])
-
-if use_demo:
-    df = load_demo()
-elif uploaded:
-    df = load_file(uploaded)
-else:
-    st.sidebar.info("Upload a file or click 'Use Demo Dataset'")
-    st.stop()
-
-# -------------------------------------------------------------
-# VALIDATION
-# -------------------------------------------------------------
-required_cols = [
-    "Record_Type","Hospital_ID","Hospital_Name","Product_ID","Product_Name",
-    "Product_Category","Usage_Family","Movement_Date","Movement_Qty",
-    "Current_Stock","Expiry_Date","Consignment_Start_Date"
-]
-
-if not all(col in df.columns for col in required_cols):
-    st.error(f"Your dataset is missing required columns: {required_cols}")
-    st.stop()
-
-# Convert date columns
-df["Movement_Date"] = pd.to_datetime(df["Movement_Date"], errors="coerce")
-df["Expiry_Date"] = pd.to_datetime(df["Expiry_Date"], errors="coerce")
-df["Consignment_Start_Date"] = pd.to_datetime(df["Consignment_Start_Date"], errors="coerce")
-
-# Separate movements and inventory snapshot
-mov = df[df["Record_Type"] == "movement"].copy()
-inv = df[df["Record_Type"] == "inventory"].copy()
-
-# -------------------------------------------------------------
-# FILTER PANEL (ABOVE KPIs)
-# -------------------------------------------------------------
-st.markdown("### 🔍 Filters")
-
-c1, c2, c3 = st.columns(3)
-
-hospital_filter = c1.multiselect("Hospital", df["Hospital_Name"].unique())
-category_filter = c2.multiselect("Product Category", df["Product_Category"].unique())
-product_filter = c3.multiselect("Product Name", df["Product_Name"].unique())
-
-# APPLY FILTERS
-filtered_mov = mov.copy()
-filtered_inv = inv.copy()
-
-if hospital_filter:
-    filtered_mov = filtered_mov[filtered_mov["Hospital_Name"].isin(hospital_filter)]
-    filtered_inv = filtered_inv[filtered_inv["Hospital_Name"].isin(hospital_filter)]
-
-if category_filter:
-    filtered_mov = filtered_mov[filtered_mov["Product_Category"].isin(category_filter)]
-    filtered_inv = filtered_inv[filtered_inv["Product_Category"].isin(category_filter)]
-
-if product_filter:
-    filtered_mov = filtered_mov[filtered_mov["Product_Name"].isin(product_filter)]
-    filtered_inv = filtered_inv[filtered_inv["Product_Name"].isin(product_filter)]
-
-# Everything below ONLY uses filtered data
-today = datetime.today()
-six_months_ago = today - timedelta(days=180)
-eighteen_months_ago = today - timedelta(days=540)
-
-# -------------------------------------------------------------
-# STEP 1 — 6-MONTH CONSUMPTION
-# -------------------------------------------------------------
-mov_6m = filtered_mov[filtered_mov["Movement_Date"] >= six_months_ago]
-
-consumption_6m = (
-    mov_6m.groupby(["Hospital_Name","Product_Name"])["Movement_Qty"]
-    .sum()
-    .reset_index()
-    .rename(columns={"Movement_Qty":"Consumption_6M"})
+# ---------------------------------------------------
+st.set_page_config(
+    page_title="Hospital Consignment Demo",
+    layout="wide"
 )
 
-# -------------------------------------------------------------
-# STEP 2 — CONSIGNMENT START DATE + DAYS ACTIVE
-# -------------------------------------------------------------
-mov_18m = filtered_mov[filtered_mov["Movement_Date"] >= eighteen_months_ago]
+st.title("📦 Hospital Consignment Intelligence Demo")
+st.write("Upload a dataset to analyze consumption, stock levels, expiry risk, and recommended quantities.")
 
-start_dates = (
-    mov_18m.groupby(["Hospital_Name","Product_Name"])["Movement_Date"]
-    .min()
-    .reset_index()
-    .rename(columns={"Movement_Date":"Start_Date"})
-)
 
-start_dates["Days_Active"] = (today - start_dates["Start_Date"]).dt.days
+# ---------------------------------------------------
+# FILE UPLOADER
+# ---------------------------------------------------
+uploaded = st.file_uploader("Upload your CSV file", type=["csv"])
 
-# -------------------------------------------------------------
-# STEP 3 — CONSUMPTION STATISTICS (18M)
-# -------------------------------------------------------------
-stats = (
-    mov_18m.groupby(["Hospital_Name","Product_Name"])
-    .agg(
-        Number_of_Consumptions=("Movement_Qty","count"),
-        Max_Consumption=("Movement_Qty","max")
+if uploaded is not None:
+
+    # Load data
+    df = pd.read_csv(uploaded)
+
+    # ---------------------------------------------------
+    # DATA CLEANING
+    # ---------------------------------------------------
+    df["Movement_Date"] = pd.to_datetime(df["Movement_Date"], errors="coerce")
+    df["Expiry_Date"] = pd.to_datetime(df["Expiry_Date"], errors="coerce")
+    df["Consignment_Start_Date"] = pd.to_datetime(df["Consignment_Start_Date"], errors="coerce")
+
+    df["Movement_Qty"] = pd.to_numeric(df["Movement_Qty"], errors="coerce")
+    df["Current_Stock"] = pd.to_numeric(df["Current_Stock"], errors="coerce")
+
+    # Separate movement + inventory
+    df_mov = df[df["Record_Type"] == "movement"].copy()
+    df_inv = df[df["Record_Type"] == "inventory"].copy()
+
+    # ---------------------------------------------------
+    # FILTERS
+    # ---------------------------------------------------
+    st.subheader("🔎 Filters")
+
+    hospitals = ["All"] + sorted(df["Hospital_Name"].dropna().unique())
+    categories = ["All"] + sorted(df["Product_Category"].dropna().unique())
+    products = ["All"] + sorted(df["Product_Name"].dropna().unique())
+
+    col1, col2, col3 = st.columns(3)
+
+    selected_hospital = col1.selectbox("Hospital", hospitals)
+    selected_category = col2.selectbox("Product Category", categories)
+    selected_product = col3.selectbox("Product Name", products)
+
+    # Apply filters (safe)
+    if selected_hospital != "All":
+        df_mov = df_mov[df_mov["Hospital_Name"] == selected_hospital]
+        df_inv = df_inv[df_inv["Hospital_Name"] == selected_hospital]
+
+    if selected_category != "All":
+        df_mov = df_mov[df_mov["Product_Category"] == selected_category]
+        df_inv = df_inv[df_inv["Product_Category"] == selected_category]
+
+    if selected_product != "All":
+        df_mov = df_mov[df_mov["Product_Name"] == selected_product]
+        df_inv = df_inv[df_inv["Product_Name"] == selected_product]
+
+
+    # ---------------------------------------------------
+    # CALCULATIONS
+    # ---------------------------------------------------
+    st.subheader("📊 Analytics")
+
+    today = datetime.today()
+    six_months_ago = today - timedelta(days=180)
+
+    # Consumption last 6 months
+    cons_last6 = (
+        df_mov[df_mov["Movement_Date"] >= six_months_ago]
+        .groupby("Product_ID")["Movement_Qty"]
+        .sum()
+        .reset_index()
+        .rename(columns={"Movement_Qty": "Consumption_6M"})
     )
-    .reset_index()
-)
 
-# -------------------------------------------------------------
-# STEP 4 — ACTIVITY QUOTIENT + CLASSIFICATION
-# -------------------------------------------------------------
-model_df = filtered_inv.copy()
+    # Merge inventory + consumption
+    results = df_inv.merge(cons_last6, on="Product_ID", how="left")
+    results["Consumption_6M"] = results["Consumption_6M"].fillna(0)
 
-model_df = model_df.merge(consumption_6m, on=["Hospital_Name","Product_Name"], how="left")
-model_df = model_df.merge(start_dates, on=["Hospital_Name","Product_Name"], how="left")
-model_df = model_df.merge(stats, on=["Hospital_Name","Product_Name"], how="left")
+    # Avg days between movements
+    avg_days_list = []
+    for pid in df_mov["Product_ID"].unique():
+        sub = df_mov[df_mov["Product_ID"] == pid].sort_values("Movement_Date")
+        if len(sub) > 1:
+            diffs = sub["Movement_Date"].diff().dt.days[1:]
+            avg_days_list.append([pid, diffs.mean()])
+        else:
+            avg_days_list.append([pid, np.nan])
 
-model_df["Number_of_Consumptions"] = model_df["Number_of_Consumptions"].fillna(0)
-model_df["Max_Consumption"] = model_df["Max_Consumption"].fillna(0)
-model_df["Consumption_6M"] = model_df["Consumption_6M"].fillna(0)
+    avg_days = pd.DataFrame(avg_days_list, columns=["Product_ID", "Avg_Days_Between"])
+    results = results.merge(avg_days, on="Product_ID", how="left")
 
-model_df["AvgWeekly"] = model_df["Consumption_6M"] / 26
 
-model_df["Activity_Quotient"] = model_df.apply(
-    lambda row: row["Days_Active"]/row["Number_of_Consumptions"]
-    if row["Number_of_Consumptions"] > 0 else 999,
-    axis=1
-)
+    # Activity classification logic
+    def classify(row):
+        fam = row["Usage_Family"]
+        days = row["Avg_Days_Between"]
 
-def classify(q):
-    if q <= 10: return "A"
-    if q <= 20: return "B"
-    if q <= 40: return "C"
-    return "D"
+        if pd.isna(days):
+            return "D"
 
-model_df["Class"] = model_df["Activity_Quotient"].apply(classify)
+        if fam == "high":
+            if days <= 7: return "A"
+            elif days <= 14: return "B"
+            elif days <= 30: return "C"
+            else: return "D"
 
-safety_map = {"A":3,"B":2,"C":1,"D":0}
-model_df["SafetyStock"] = model_df["Class"].map(safety_map)
+        if fam == "medium":
+            if days <= 14: return "A"
+            elif days <= 28: return "B"
+            elif days <= 60: return "C"
+            else: return "D"
 
-# -------------------------------------------------------------
-# STEP 5 — RECOMMENDED TARGET STOCK
-# -------------------------------------------------------------
-model_df["Recommended"] = model_df["Max_Consumption"] + model_df["SafetyStock"]
+        if fam == "low":
+            if days <= 30: return "A"
+            elif days <= 60: return "B"
+            elif days <= 120: return "C"
+            else: return "D"
 
-# -------------------------------------------------------------
-# EXPIRY FLAGS
-# -------------------------------------------------------------
-def expiry_flag(date):
-    if pd.isna(date):
-        return "🟩 OK"
-    if date < today:
-        return "🟥 EXPIRED"
-    if date <= today + timedelta(days=30):
-        return "🟧 Expiring Soon"
-    return "🟩 OK"
+    results["Activity_Class"] = results.apply(classify, axis=1)
 
-model_df["Expiry_Status"] = model_df["Expiry_Date"].apply(expiry_flag)
 
-model_df["Difference"] = model_df["Current_Stock"] - model_df["Recommended"]
+    # Recommended stock logic
+    def recommended(row):
+        cons_weekly = row["Consumption_6M"] / 26
+        fam = row["Usage_Family"]
+        cls = row["Activity_Class"]
 
-# -------------------------------------------------------------
-# KPI SECTION
-# -------------------------------------------------------------
-st.markdown("### 📊 Key Metrics")
+        if fam == "high":
+            return round(cons_weekly * {"A":3,"B":2,"C":1,"D":0.2}[cls])
+        if fam == "medium":
+            return round(cons_weekly * {"A":2,"B":1.5,"C":1,"D":0.2}[cls])
+        if fam == "low":
+            return round(cons_weekly * {"A":1,"B":1,"C":1,"D":0}[cls])
 
-k1, k2, k3, k4, k5 = st.columns(5)
+    results["Recommended_Stock"] = results.apply(recommended, axis=1)
 
-k1.metric("Total Consumption (6M)", int(model_df["Consumption_6M"].sum()))
-k2.metric("Current Inventory", int(model_df["Current_Stock"].sum()))
-k3.metric("Total Recommended", int(model_df["Recommended"].sum()))
 
-k4.metric("Reduction Needed", int(model_df[model_df["Difference"] > 0]["Difference"].sum()))
-k5.metric("Increase Needed", int(-model_df[model_df["Difference"] < 0]["Difference"].sum()))
+    # Expiry risk logic
+    def expiry_risk(date):
+        if pd.isna(date):
+            return "Unknown"
+        days_left = (date - today).days
+        if days_left < 90: return "High"
+        elif days_left < 180: return "Medium"
+        else: return "Low"
 
-st.divider()
+    results["Expiry_Risk"] = results["Expiry_Date"].apply(expiry_risk)
 
-# -------------------------------------------------------------
-# TABS
-# -------------------------------------------------------------
-tab_matrix, tab_reco = st.tabs(["📦 Inventory Matrix", "✔ Recommendations"])
+    # Overstock
+    results["Overstock"] = results["Current_Stock"] > results["Recommended_Stock"]
 
-# -------------------------------------------------------------
-# MATRIX: Category × Hospital
-# -------------------------------------------------------------
-with tab_matrix:
-    st.subheader("Category × Hospital Inventory Difference")
 
-    pivot = model_df.pivot_table(
-        index="Product_Category",
+    # ---------------------------------------------------
+    # MAIN RESULTS TABLE
+    # ---------------------------------------------------
+    st.write("### 📋 Results Table")
+    st.dataframe(results)
+
+
+    # ---------------------------------------------------
+    # PIVOT 1 — Recommended Stock
+    # ---------------------------------------------------
+    st.write("### 📊 Recommended Stock by Hospital")
+
+    pivot_rec = results.pivot_table(
+        index="Product_Name",
         columns="Hospital_Name",
-        values="Difference",
-        aggfunc="sum",
-        fill_value=0
-    )
+        values="Recommended_Stock",
+        aggfunc="first"
+    ).fillna(0)
 
-    def color_cells(val):
-        if val < 0: return "background-color:#ffcccc;"
-        if val > 0: return "background-color:#ccffcc;"
+    st.dataframe(pivot_rec.style.format("{:.0f}"))
+
+
+    # ---------------------------------------------------
+    # PIVOT 2 — Current Stock
+    # ---------------------------------------------------
+    st.write("### 📦 Current Stock by Hospital")
+
+    pivot_curr = results.pivot_table(
+        index="Product_Name",
+        columns="Hospital_Name",
+        values="Current_Stock",
+        aggfunc="first"
+    ).fillna(0)
+
+    st.dataframe(pivot_curr.style.format("{:.0f}"))
+
+
+    # ---------------------------------------------------
+    # PIVOT 5 — Expiry Risk (with color)
+    # ---------------------------------------------------
+    st.write("### ⏳ Expiry Risk by Hospital")
+
+    pivot_exp = results.pivot_table(
+        index="Product_Name",
+        columns="Hospital_Name",
+        values="Expiry_Risk",
+        aggfunc="first"
+    ).fillna("Unknown")
+
+    def color_risk(val):
+        if val == "High":
+            return "background-color: #ffcccc"
+        elif val == "Medium":
+            return "background-color: #ffe4b5"
+        elif val == "Low":
+            return "background-color: #ccffcc"
         return ""
 
-    st.dataframe(pivot.style.applymap(color_cells), use_container_width=True)
-
-# -------------------------------------------------------------
-# RECOMMENDATIONS TAB
-# -------------------------------------------------------------
-with tab_reco:
-    st.subheader("Recommended Actions")
-
-    model_df["Action"] = model_df.apply(
-        lambda row: "Reduce" if row["Difference"] > 0
-        else ("Increase" if row["Difference"] < 0 else "OK"),
-        axis=1
-    )
-
-    model_df.loc[model_df["Expiry_Status"]=="🟥 EXPIRED","Action"]="REMOVE – Expired"
-
-    table = model_df[[
-        "Hospital_Name","Product_Name","Product_Category",
-        "Current_Stock","Recommended","Difference",
-        "Class","SafetyStock","Max_Consumption",
-        "Expiry_Date","Expiry_Status","Action"
-    ]]
-
-    st.dataframe(table, use_container_width=True)
+    st.dataframe(pivot_exp.style.applymap(color_risk))
