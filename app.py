@@ -72,6 +72,7 @@ hospital_filter = c1.multiselect("Hospital", df["Hospital_Name"].unique())
 category_filter = c2.multiselect("Product Category", df["Product_Category"].unique())
 product_filter = c3.multiselect("Product Name", df["Product_Name"].unique())
 
+# APPLY FILTERS
 filtered_mov = mov.copy()
 filtered_inv = inv.copy()
 
@@ -87,12 +88,14 @@ if product_filter:
     filtered_mov = filtered_mov[filtered_mov["Product_Name"].isin(product_filter)]
     filtered_inv = filtered_inv[filtered_inv["Product_Name"].isin(product_filter)]
 
+# Everything below ONLY uses filtered data
+today = datetime.today()
+six_months_ago = today - timedelta(days=180)
+eighteen_months_ago = today - timedelta(days=540)
+
 # -------------------------------------------------------------
 # STEP 1 — 6-MONTH CONSUMPTION
 # -------------------------------------------------------------
-today = datetime.today()
-six_months_ago = today - timedelta(days=180)
-
 mov_6m = filtered_mov[filtered_mov["Movement_Date"] >= six_months_ago]
 
 consumption_6m = (
@@ -105,8 +108,6 @@ consumption_6m = (
 # -------------------------------------------------------------
 # STEP 2 — CONSIGNMENT START DATE + DAYS ACTIVE
 # -------------------------------------------------------------
-eighteen_months_ago = today - timedelta(days=540)
-
 mov_18m = filtered_mov[filtered_mov["Movement_Date"] >= eighteen_months_ago]
 
 start_dates = (
@@ -133,17 +134,19 @@ stats = (
 # -------------------------------------------------------------
 # STEP 4 — ACTIVITY QUOTIENT + CLASSIFICATION
 # -------------------------------------------------------------
-merged = filtered_inv.merge(consumption_6m, on=["Hospital_Name","Product_Name"], how="left")
-merged = merged.merge(start_dates, on=["Hospital_Name","Product_Name"], how="left")
-merged = merged.merge(stats, on=["Hospital_Name","Product_Name"], how="left")
+model_df = filtered_inv.copy()
 
-merged["Number_of_Consumptions"] = merged["Number_of_Consumptions"].fillna(0)
-merged["Max_Consumption"] = merged["Max_Consumption"].fillna(0)
-merged["Consumption_6M"] = merged["Consumption_6M"].fillna(0)
+model_df = model_df.merge(consumption_6m, on=["Hospital_Name","Product_Name"], how="left")
+model_df = model_df.merge(start_dates, on=["Hospital_Name","Product_Name"], how="left")
+model_df = model_df.merge(stats, on=["Hospital_Name","Product_Name"], how="left")
 
-merged["AvgWeekly"] = merged["Consumption_6M"] / 26
+model_df["Number_of_Consumptions"] = model_df["Number_of_Consumptions"].fillna(0)
+model_df["Max_Consumption"] = model_df["Max_Consumption"].fillna(0)
+model_df["Consumption_6M"] = model_df["Consumption_6M"].fillna(0)
 
-merged["Activity_Quotient"] = merged.apply(
+model_df["AvgWeekly"] = model_df["Consumption_6M"] / 26
+
+model_df["Activity_Quotient"] = model_df.apply(
     lambda row: row["Days_Active"]/row["Number_of_Consumptions"]
     if row["Number_of_Consumptions"] > 0 else 999,
     axis=1
@@ -155,15 +158,15 @@ def classify(q):
     if q <= 40: return "C"
     return "D"
 
-merged["Class"] = merged["Activity_Quotient"].apply(classify)
+model_df["Class"] = model_df["Activity_Quotient"].apply(classify)
 
 safety_map = {"A":3,"B":2,"C":1,"D":0}
-merged["SafetyStock"] = merged["Class"].map(safety_map)
+model_df["SafetyStock"] = model_df["Class"].map(safety_map)
 
 # -------------------------------------------------------------
 # STEP 5 — RECOMMENDED TARGET STOCK
 # -------------------------------------------------------------
-merged["Recommended"] = merged["Max_Consumption"] + merged["SafetyStock"]
+model_df["Recommended"] = model_df["Max_Consumption"] + model_df["SafetyStock"]
 
 # -------------------------------------------------------------
 # EXPIRY FLAGS
@@ -177,7 +180,9 @@ def expiry_flag(date):
         return "🟧 Expiring Soon"
     return "🟩 OK"
 
-merged["Expiry_Status"] = merged["Expiry_Date"].apply(expiry_flag)
+model_df["Expiry_Status"] = model_df["Expiry_Date"].apply(expiry_flag)
+
+model_df["Difference"] = model_df["Current_Stock"] - model_df["Recommended"]
 
 # -------------------------------------------------------------
 # KPI SECTION
@@ -186,14 +191,12 @@ st.markdown("### 📊 Key Metrics")
 
 k1, k2, k3, k4, k5 = st.columns(5)
 
-k1.metric("Total Consumption (6M)", int(merged["Consumption_6M"].sum()))
-k2.metric("Current Inventory", int(merged["Current_Stock"].sum()))
-k3.metric("Total Recommended", int(merged["Recommended"].sum()))
+k1.metric("Total Consumption (6M)", int(model_df["Consumption_6M"].sum()))
+k2.metric("Current Inventory", int(model_df["Current_Stock"].sum()))
+k3.metric("Total Recommended", int(model_df["Recommended"].sum()))
 
-# Reduction and increase
-differences = merged["Current_Stock"] - merged["Recommended"]
-k4.metric("Reduction Needed", int(differences[differences > 0].sum()))
-k5.metric("Increase Needed", int(-differences[differences < 0].sum()))
+k4.metric("Reduction Needed", int(model_df[model_df["Difference"] > 0]["Difference"].sum()))
+k5.metric("Increase Needed", int(-model_df[model_df["Difference"] < 0]["Difference"].sum()))
 
 st.divider()
 
@@ -208,9 +211,7 @@ tab_matrix, tab_reco = st.tabs(["📦 Inventory Matrix", "✔ Recommendations"])
 with tab_matrix:
     st.subheader("Category × Hospital Inventory Difference")
 
-    merged["Difference"] = merged["Current_Stock"] - merged["Recommended"]
-
-    pivot = merged.pivot_table(
+    pivot = model_df.pivot_table(
         index="Product_Category",
         columns="Hospital_Name",
         values="Difference",
@@ -231,15 +232,15 @@ with tab_matrix:
 with tab_reco:
     st.subheader("Recommended Actions")
 
-    merged["Action"] = merged.apply(
+    model_df["Action"] = model_df.apply(
         lambda row: "Reduce" if row["Difference"] > 0
         else ("Increase" if row["Difference"] < 0 else "OK"),
         axis=1
     )
 
-    merged.loc[merged["Expiry_Status"]=="🟥 EXPIRED","Action"]="REMOVE – Expired"
+    model_df.loc[model_df["Expiry_Status"]=="🟥 EXPIRED","Action"]="REMOVE – Expired"
 
-    table = merged[[
+    table = model_df[[
         "Hospital_Name","Product_Name","Product_Category",
         "Current_Stock","Recommended","Difference",
         "Class","SafetyStock","Max_Consumption",
@@ -247,4 +248,3 @@ with tab_reco:
     ]]
 
     st.dataframe(table, use_container_width=True)
-
