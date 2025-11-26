@@ -1,0 +1,7 @@
+Hospital_ID,Hospital_Name,Product_ID,Product_Name,Product_Category,Usage_Family,Record_Type,Current_Stock,Expiry_Date,Consignment_Start_Date,Movement_Date,Movement_Qty
+H001,City Hospital,P001,Rapid Test A,Diagnostic Kits,high,inventory,12,2025-04-01,2024-01-01,,
+H001,City Hospital,P002,Calibration Kit B,Diagnostic Kits,medium,inventory,5,2025-02-15,2024-02-15,,
+H002,Green Valley,P001,Rapid Test A,Diagnostic Kits,high,inventory,8,2025-05-20,2024-01-01,,
+H002,Green Valley,P003,Cartridge C,Diagnostic Kits,low,inventory,3,2025-03-10,2024-03-10,,
+H003,St. Mary,P002,Calibration Kit B,Diagnostic Kits,medium,inventory,4,2025-01-30,2024-01-30,,
+H003,St. Mary,P004,PCR Panel D,Diagnostic Kits,high,inventory,15,2025-07-01,2024-04-01,,
